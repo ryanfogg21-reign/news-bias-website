@@ -1,9 +1,12 @@
 import re
-import sqlite3
 import os
 from contextlib import contextmanager
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "articles.db")
+import psycopg2
+import psycopg2.pool
+from psycopg2.extras import RealDictCursor
+
+_pool: psycopg2.pool.ThreadedConnectionPool | None = None
 
 STOP_WORDS = {
     "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
@@ -24,134 +27,144 @@ def extract_keywords(title: str) -> set[str]:
 
 
 def init_db():
+    global _pool
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        raise RuntimeError("DATABASE_URL environment variable is not set")
+
+    _pool = psycopg2.pool.ThreadedConnectionPool(1, 5, db_url)
+
     with get_db() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS articles (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                url TEXT UNIQUE NOT NULL,
-                title TEXT NOT NULL,
-                outlet TEXT NOT NULL,
-                author TEXT,
-                published_at TEXT,
-                body TEXT,
-                headline_score REAL,
-                body_score REAL,
-                overall_score REAL,
-                headline_explanation TEXT,
-                body_explanation TEXT,
-                author_pattern_note TEXT,
-                cross_outlet_note TEXT,
-                analyzed_at TEXT,
-                fetched_at TEXT NOT NULL
-            )
-        """)
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS articles (
+                    id               SERIAL PRIMARY KEY,
+                    url              TEXT UNIQUE NOT NULL,
+                    title            TEXT NOT NULL,
+                    outlet           TEXT NOT NULL,
+                    author           TEXT,
+                    published_at     TEXT,
+                    body             TEXT,
+                    headline_score   DOUBLE PRECISION,
+                    body_score       DOUBLE PRECISION,
+                    overall_score    DOUBLE PRECISION,
+                    headline_explanation  TEXT,
+                    body_explanation      TEXT,
+                    author_pattern_note   TEXT,
+                    cross_outlet_note     TEXT,
+                    analyzed_at      TEXT,
+                    fetched_at       TEXT NOT NULL
+                )
+            """)
+            # Safe migration — adds columns if they don't exist yet
+            for col, coltype in [
+                ("author", "TEXT"),
+                ("author_pattern_note", "TEXT"),
+                ("cross_outlet_note", "TEXT"),
+            ]:
+                cur.execute(
+                    f"ALTER TABLE articles ADD COLUMN IF NOT EXISTS {col} {coltype}"
+                )
         conn.commit()
-
-    # Safe migration for databases created before these columns existed
-    _add_column_if_missing("author", "TEXT")
-    _add_column_if_missing("author_pattern_note", "TEXT")
-    _add_column_if_missing("cross_outlet_note", "TEXT")
-
-
-def _add_column_if_missing(column: str, col_type: str):
-    with get_db() as conn:
-        cols = [row[1] for row in conn.execute("PRAGMA table_info(articles)").fetchall()]
-        if column not in cols:
-            conn.execute(f"ALTER TABLE articles ADD COLUMN {column} {col_type}")
-            conn.commit()
 
 
 @contextmanager
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = _pool.getconn()
     try:
         yield conn
+    except Exception:
+        conn.rollback()
+        raise
     finally:
-        conn.close()
+        _pool.putconn(conn)
 
 
 def upsert_article(article: dict):
     with get_db() as conn:
-        conn.execute("""
-            INSERT INTO articles (url, title, outlet, author, published_at, body, fetched_at)
-            VALUES (:url, :title, :outlet, :author, :published_at, :body, :fetched_at)
-            ON CONFLICT(url) DO NOTHING
-        """, article)
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO articles (url, title, outlet, author, published_at, body, fetched_at)
+                VALUES (%(url)s, %(title)s, %(outlet)s, %(author)s, %(published_at)s, %(body)s, %(fetched_at)s)
+                ON CONFLICT (url) DO NOTHING
+            """, article)
         conn.commit()
 
 
 def update_analysis(url: str, analysis: dict):
     with get_db() as conn:
-        conn.execute("""
-            UPDATE articles
-            SET headline_score      = :headline_score,
-                body_score          = :body_score,
-                overall_score       = :overall_score,
-                headline_explanation = :headline_explanation,
-                body_explanation    = :body_explanation,
-                author_pattern_note = :author_pattern_note,
-                cross_outlet_note   = :cross_outlet_note,
-                analyzed_at         = :analyzed_at
-            WHERE url = :url
-        """, {**analysis, "url": url})
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE articles
+                SET headline_score       = %(headline_score)s,
+                    body_score           = %(body_score)s,
+                    overall_score        = %(overall_score)s,
+                    headline_explanation = %(headline_explanation)s,
+                    body_explanation     = %(body_explanation)s,
+                    author_pattern_note  = %(author_pattern_note)s,
+                    cross_outlet_note    = %(cross_outlet_note)s,
+                    analyzed_at          = %(analyzed_at)s
+                WHERE url = %(url)s
+            """, {**analysis, "url": url})
         conn.commit()
 
 
 def get_articles(outlet: str = None, min_score: float = -5, max_score: float = 5,
                  limit: int = 50, offset: int = 0) -> list[dict]:
     with get_db() as conn:
-        query = """
-            SELECT * FROM articles
-            WHERE analyzed_at IS NOT NULL
-              AND overall_score BETWEEN ? AND ?
-        """
-        params: list = [min_score, max_score]
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            query = """
+                SELECT * FROM articles
+                WHERE analyzed_at IS NOT NULL
+                  AND overall_score BETWEEN %s AND %s
+            """
+            params: list = [min_score, max_score]
 
-        if outlet:
-            query += " AND outlet = ?"
-            params.append(outlet)
+            if outlet:
+                query += " AND outlet = %s"
+                params.append(outlet)
 
-        query += " ORDER BY fetched_at DESC LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
+            query += " ORDER BY fetched_at DESC LIMIT %s OFFSET %s"
+            params.extend([limit, offset])
 
-        rows = conn.execute(query, params).fetchall()
-        return [dict(row) for row in rows]
+            cur.execute(query, params)
+            return [dict(row) for row in cur.fetchall()]
 
 
 def get_unanalyzed_articles() -> list[dict]:
     with get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM articles WHERE analyzed_at IS NULL"
-        ).fetchall()
-        return [dict(row) for row in rows]
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT * FROM articles WHERE analyzed_at IS NULL")
+            return [dict(row) for row in cur.fetchall()]
 
 
 def get_articles_by_author(author: str, exclude_url: str, limit: int = 5) -> list[dict]:
     if not author:
         return []
     with get_db() as conn:
-        rows = conn.execute("""
-            SELECT title, outlet, overall_score FROM articles
-            WHERE author = ? AND url != ? AND analyzed_at IS NOT NULL
-            ORDER BY fetched_at DESC LIMIT ?
-        """, (author, exclude_url, limit)).fetchall()
-        return [dict(row) for row in rows]
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT title, outlet, overall_score FROM articles
+                WHERE author = %s AND url != %s AND analyzed_at IS NOT NULL
+                ORDER BY fetched_at DESC LIMIT %s
+            """, (author, exclude_url, limit))
+            return [dict(row) for row in cur.fetchall()]
 
 
 def get_similar_articles(title: str, exclude_outlet: str, exclude_url: str,
                          limit: int = 4) -> list[dict]:
-    """Find analyzed articles from other outlets covering a similar topic via keyword overlap."""
     keywords = extract_keywords(title)
     if len(keywords) < 2:
         return []
 
     with get_db() as conn:
-        rows = conn.execute("""
-            SELECT title, outlet, overall_score FROM articles
-            WHERE outlet != ? AND url != ? AND analyzed_at IS NOT NULL
-            ORDER BY fetched_at DESC LIMIT 200
-        """, (exclude_outlet, exclude_url)).fetchall()
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT title, outlet, overall_score FROM articles
+                WHERE outlet != %s AND url != %s AND analyzed_at IS NOT NULL
+                ORDER BY fetched_at DESC LIMIT 200
+            """, (exclude_outlet, exclude_url))
+            rows = cur.fetchall()
 
     scored = []
     for row in rows:
@@ -165,27 +178,30 @@ def get_similar_articles(title: str, exclude_outlet: str, exclude_url: str,
 
 def get_outlets() -> list[str]:
     with get_db() as conn:
-        rows = conn.execute(
-            "SELECT DISTINCT outlet FROM articles ORDER BY outlet"
-        ).fetchall()
-        return [row["outlet"] for row in rows]
+        with conn.cursor() as cur:
+            cur.execute("SELECT DISTINCT outlet FROM articles ORDER BY outlet")
+            return [row[0] for row in cur.fetchall()]
 
 
 def get_stats() -> dict:
     with get_db() as conn:
-        total = conn.execute(
-            "SELECT COUNT(*) FROM articles WHERE analyzed_at IS NOT NULL"
-        ).fetchone()[0]
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM articles WHERE analyzed_at IS NOT NULL")
+            total = cur.fetchone()[0]
 
-        outlet_rows = conn.execute("""
-            SELECT outlet, COUNT(*) as count, AVG(overall_score) as avg_score
-            FROM articles
-            WHERE analyzed_at IS NOT NULL
-            GROUP BY outlet
-            ORDER BY outlet
-        """).fetchall()
+            cur.execute("""
+                SELECT outlet, COUNT(*) as count, AVG(overall_score) as avg_score
+                FROM articles
+                WHERE analyzed_at IS NOT NULL
+                GROUP BY outlet
+                ORDER BY outlet
+            """)
+            rows = cur.fetchall()
 
         return {
             "total_analyzed": total,
-            "by_outlet": [dict(row) for row in outlet_rows],
+            "by_outlet": [
+                {"outlet": r[0], "count": r[1], "avg_score": round(r[2], 2) if r[2] else None}
+                for r in rows
+            ],
         }
