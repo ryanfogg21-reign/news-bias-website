@@ -4,13 +4,20 @@ import threading
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
-from database import init_db, get_articles, get_outlets, get_stats
+from database import (
+    init_db, get_articles, get_outlets, get_stats,
+    get_article_by_url, upsert_article, update_analysis,
+    get_articles_by_author, get_similar_articles,
+)
 from scheduler import start_scheduler, stop_scheduler, run_refresh
+from scraper import fetch_article_from_url
+from analyzer import analyze_article
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -59,3 +66,43 @@ def stats():
 def trigger_refresh():
     threading.Thread(target=run_refresh, daemon=True).start()
     return {"status": "refresh started"}
+
+
+class AnalyzeUrlRequest(BaseModel):
+    url: str
+
+
+@app.post("/api/analyze-url")
+def analyze_url(request: AnalyzeUrlRequest):
+    url = request.url.strip()
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="URL must start with http:// or https://")
+
+    existing = get_article_by_url(url)
+    if existing and existing.get("analyzed_at"):
+        return {"status": "existing", "article": existing}
+
+    article_data = fetch_article_from_url(url)
+    if not article_data:
+        raise HTTPException(status_code=422, detail="Could not fetch or extract content from the URL. The site may block scrapers.")
+
+    upsert_article(article_data)
+
+    author_articles = get_articles_by_author(article_data.get("author"), url)
+    similar = get_similar_articles(article_data["title"], article_data["outlet"], url)
+
+    analysis = analyze_article(
+        title=article_data["title"],
+        body=article_data.get("body", ""),
+        author=article_data.get("author"),
+        author_articles=author_articles,
+        similar_articles=similar,
+    )
+
+    if not analysis:
+        raise HTTPException(status_code=500, detail="AI analysis failed. Please try again.")
+
+    update_analysis(url, analysis)
+
+    full_article = get_article_by_url(url)
+    return {"status": "new", "article": full_article}

@@ -3,8 +3,29 @@ import trafilatura
 import requests
 import logging
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
+
+DOMAIN_OUTLET_MAP = {
+    "foxnews.com": "Fox News",
+    "cnn.com": "CNN",
+    "nbcnews.com": "NBC News",
+    "abcnews.go.com": "ABC News",
+    "npr.org": "NPR",
+    "cbsnews.com": "CBS News",
+    "apnews.com": "AP News",
+    "thehill.com": "The Hill",
+    "politico.com": "Politico",
+    "washingtonpost.com": "Washington Post",
+    "nytimes.com": "New York Times",
+    "wsj.com": "Wall Street Journal",
+    "breitbart.com": "Breitbart",
+    "msnbc.com": "MSNBC",
+    "reuters.com": "Reuters",
+    "bbc.com": "BBC",
+    "theguardian.com": "The Guardian",
+}
 
 # Washington Post and Reuters removed — WashPost blocks server scrapers with 90s timeouts,
 # Reuters RSS feed currently returns 0 articles.
@@ -92,6 +113,57 @@ def fetch_feed(source: dict, max_articles: int = 10) -> list[dict]:
         logger.error("Error fetching feed %s: %s", source["name"], e)
 
     return articles
+
+
+def _detect_outlet(url: str) -> str:
+    try:
+        domain = urlparse(url).netloc.lower()
+        if domain.startswith("www."):
+            domain = domain[4:]
+        for key, name in DOMAIN_OUTLET_MAP.items():
+            if domain == key or domain.endswith("." + key):
+                return name
+        parts = domain.split(".")
+        return parts[-2].title() if len(parts) >= 2 else domain.title()
+    except Exception:
+        return "Unknown"
+
+
+def fetch_article_from_url(url: str) -> dict | None:
+    """Fetch and extract a single article by URL for on-demand analysis."""
+    try:
+        downloaded = trafilatura.fetch_url(url)
+        if not downloaded:
+            resp = requests.get(url, headers=HEADERS, timeout=10)
+            resp.raise_for_status()
+            downloaded = resp.text
+
+        metadata = trafilatura.extract_metadata(downloaded)
+        text = trafilatura.extract(downloaded, include_comments=False, include_tables=False)
+
+        title = (metadata.title if metadata and metadata.title else "").strip()
+        author = (metadata.author if metadata and metadata.author else None)
+        if isinstance(author, list):
+            author = ", ".join(author) if author else None
+
+        if not title or not text:
+            return None
+
+        outlet = _detect_outlet(url)
+        now = datetime.now(timezone.utc).isoformat()
+
+        return {
+            "url": url,
+            "title": title,
+            "outlet": outlet,
+            "author": author,
+            "published_at": None,
+            "body": text[:8000],
+            "fetched_at": now,
+        }
+    except Exception as e:
+        logger.error("Error fetching article from URL %s: %s", url, e)
+        return None
 
 
 def fetch_all_feeds(max_articles_per_source: int = 10) -> list[dict]:

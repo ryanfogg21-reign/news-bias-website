@@ -2,9 +2,8 @@ import { useState, useEffect, useCallback } from "react";
 import Header from "./components/Header.jsx";
 import FilterPanel from "./components/FilterPanel.jsx";
 import ArticleCard from "./components/ArticleCard.jsx";
+import UrlAnalyzer from "./components/UrlAnalyzer.jsx";
 
-// In production (GitHub Pages), __API_URL__ is injected by vite.config.js
-// from the VITE_API_URL env var set during the build.
 const API_BASE = (typeof __API_URL__ !== "undefined" && __API_URL__) ? __API_URL__ : "";
 
 const DEFAULT_FILTERS = { outlet: null, minScore: -5, maxScore: 5 };
@@ -62,7 +61,6 @@ export default function App() {
     setRefreshing(true);
     try {
       await fetch(`${API_BASE}/api/refresh`, { method: "POST" });
-      // Poll for new results after a short delay
       setTimeout(async () => {
         await fetchArticles(filters);
         await fetchMeta();
@@ -73,14 +71,24 @@ export default function App() {
     }
   };
 
+  const handleArticleFound = (article, status) => {
+    if (status === "new") {
+      setArticles(prev => {
+        if (prev.find(a => a.id === article.id || a.url === article.url)) return prev;
+        return [article, ...prev];
+      });
+      fetchMeta();
+    }
+  };
+
   return (
-    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
+    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", background: "var(--bg)" }}>
       <Header stats={stats} onRefresh={handleRefresh} refreshing={refreshing} />
 
       <div style={{
         flex: 1,
         display: "grid",
-        gridTemplateColumns: "220px 1fr",
+        gridTemplateColumns: "240px 1fr",
         gap: 24,
         padding: 24,
         maxWidth: 1400,
@@ -90,14 +98,17 @@ export default function App() {
         <FilterPanel outlets={outlets} filters={filters} onChange={handleFilterChange} />
 
         <main>
+          <UrlAnalyzer apiBase={API_BASE} onArticleFound={handleArticleFound} />
+
           {error && (
             <div style={{
-              background: "#311b1b",
-              border: "1px solid #b71c1c",
+              background: "#fef2f2",
+              border: "1px solid #fca5a5",
               borderRadius: 8,
               padding: 16,
-              color: "#ef9a9a",
+              color: "#b91c1c",
               marginBottom: 16,
+              fontSize: 13,
             }}>
               {error}
             </div>
@@ -108,14 +119,14 @@ export default function App() {
           )}
 
           {loading ? (
-            <div style={{ color: "var(--text-dim)", padding: 32, textAlign: "center" }}>
+            <div style={{ color: "var(--text-muted)", padding: 32, textAlign: "center", fontSize: 14 }}>
               Loading articles…
             </div>
           ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              <p style={{ color: "var(--text-dim)", fontSize: 13, marginBottom: 4 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <p style={{ color: "var(--text-muted)", fontSize: 12, marginBottom: 2, fontWeight: 500 }}>
                 {articles.length} article{articles.length !== 1 ? "s" : ""}
-                {filters.outlet ? ` from ${filters.outlet}` : ""}
+                {filters.outlet ? ` from ${filters.outlet}` : " across all outlets"}
               </p>
               {articles.map(a => (
                 <ArticleCard key={a.id} article={a} />
@@ -133,13 +144,14 @@ function EmptyState() {
     <div style={{
       textAlign: "center",
       padding: "64px 24px",
-      color: "var(--text-dim)",
+      color: "var(--text-muted)",
     }}>
       <div style={{ fontSize: 48, marginBottom: 16 }}>📰</div>
       <h2 style={{ fontSize: 18, marginBottom: 8, color: "var(--text)" }}>No articles yet</h2>
-      <p style={{ fontSize: 14, maxWidth: 360, margin: "0 auto" }}>
+      <p style={{ fontSize: 14, maxWidth: 380, margin: "0 auto", lineHeight: 1.6 }}>
         The backend is fetching and analyzing articles in the background.
-        This may take a few minutes on first run. Hit <strong>↺ Refresh</strong> to check for updates.
+        This may take a few minutes on first run. Hit <strong>↺ Refresh Feeds</strong> to check for updates,
+        or paste a URL above to analyze an article on demand.
       </p>
     </div>
   );

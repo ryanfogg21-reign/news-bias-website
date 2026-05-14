@@ -176,6 +176,14 @@ def get_similar_articles(title: str, exclude_outlet: str, exclude_url: str,
     return [item for _, item in scored[:limit]]
 
 
+def get_article_by_url(url: str) -> dict | None:
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT * FROM articles WHERE url = %s", (url,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
 def get_outlets() -> list[str]:
     with get_db() as conn:
         with conn.cursor() as cur:
