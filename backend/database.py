@@ -122,7 +122,7 @@ def get_articles(outlet: str = None, min_score: float = -5, max_score: float = 5
 def get_unanalyzed_articles() -> list[dict]:
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT * FROM articles WHERE analyzed_at IS NULL AND body IS NOT NULL"
+            "SELECT * FROM articles WHERE analyzed_at IS NULL"
         ).fetchall()
         return [dict(row) for row in rows]
 

@@ -6,42 +6,50 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
+# Washington Post and Reuters removed — WashPost blocks server scrapers with 90s timeouts,
+# Reuters RSS feed currently returns 0 articles.
 NEWS_SOURCES = [
-    {"name": "Fox News", "rss": "https://feeds.foxnews.com/foxnews/politics"},
-    {"name": "CNN", "rss": "http://rss.cnn.com/rss/cnn_allpolitics.rss"},
-    {"name": "NBC News", "rss": "https://feeds.nbcnews.com/nbcnews/public/politics"},
-    {"name": "ABC News", "rss": "https://abcnews.go.com/abcnews/politicsheadlines"},
-    {"name": "NPR", "rss": "https://feeds.npr.org/1014/rss.xml"},
-    {"name": "Reuters", "rss": "https://feeds.reuters.com/reuters/politicsNews"},
-    {"name": "The Hill", "rss": "https://thehill.com/rss/syndicator/19110"},
-    {"name": "Politico", "rss": "https://rss.politico.com/politics-news.xml"},
-    {"name": "Washington Post", "rss": "https://feeds.washingtonpost.com/rss/politics"},
+    {"name": "Fox News",  "rss": "https://feeds.foxnews.com/foxnews/politics"},
+    {"name": "CNN",       "rss": "http://rss.cnn.com/rss/cnn_allpolitics.rss"},
+    {"name": "NBC News",  "rss": "https://feeds.nbcnews.com/nbcnews/public/politics"},
+    {"name": "ABC News",  "rss": "https://abcnews.go.com/abcnews/politicsheadlines"},
+    {"name": "NPR",       "rss": "https://feeds.npr.org/1014/rss.xml"},
+    {"name": "CBS News",  "rss": "https://www.cbsnews.com/latest/rss/politics"},
+    {"name": "AP News",   "rss": "https://feeds.apnews.com/apf-politics"},
+    {"name": "The Hill",  "rss": "https://thehill.com/rss/syndicator/19110"},
+    {"name": "Politico",  "rss": "https://rss.politico.com/politics-news.xml"},
 ]
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; NewsBiasAnalyzer/1.0)"
-}
+HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; NewsBiasAnalyzer/1.0)"}
 
 
-def fetch_article_body(url: str) -> str:
+def fetch_article_body(url: str, rss_summary: str = "") -> str:
+    """Fetch full article text. Falls back to rss_summary on 403/timeout."""
     try:
-        downloaded = trafilatura.fetch_url(url)
-        if downloaded:
-            text = trafilatura.extract(downloaded, include_comments=False, include_tables=False)
-            if text:
-                return text[:8000]
-    except Exception as e:
-        logger.warning("trafilatura failed for %s: %s", url, e)
-
-    # Fallback: raw requests
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=10)
+        resp = requests.get(url, headers=HEADERS, timeout=8)
+        if resp.status_code == 403:
+            # Site blocks scrapers — use RSS summary instead of hanging
+            return rss_summary
         resp.raise_for_status()
         text = trafilatura.extract(resp.text, include_comments=False, include_tables=False)
-        return (text or "")[:8000]
+        if text and len(text) > 100:
+            return text[:8000]
     except Exception as e:
-        logger.warning("fallback fetch failed for %s: %s", url, e)
-        return ""
+        logger.debug("Body fetch failed for %s: %s", url, e)
+    return rss_summary
+
+
+def _rss_summary(entry) -> str:
+    """Extract plain-text summary from an RSS entry."""
+    for field in ("summary", "description", "content"):
+        val = getattr(entry, field, None)
+        if isinstance(val, list) and val:
+            val = val[0].get("value", "")
+        if val:
+            # Strip basic HTML tags
+            import re
+            return re.sub(r"<[^>]+>", "", str(val)).strip()[:1000]
+    return ""
 
 
 def fetch_feed(source: dict, max_articles: int = 10) -> list[dict]:
@@ -62,14 +70,14 @@ def fetch_feed(source: dict, max_articles: int = 10) -> list[dict]:
                 except Exception:
                     pass
 
-            # Extract author — RSS feeds use various fields
             author = None
             if hasattr(entry, "author") and entry.author:
                 author = entry.author.strip()
             elif hasattr(entry, "authors") and entry.authors:
                 author = entry.authors[0].get("name", "").strip() or None
 
-            body = fetch_article_body(url)
+            summary = _rss_summary(entry)
+            body = fetch_article_body(url, rss_summary=summary)
 
             articles.append({
                 "url": url,
@@ -77,7 +85,7 @@ def fetch_feed(source: dict, max_articles: int = 10) -> list[dict]:
                 "outlet": source["name"],
                 "author": author,
                 "published_at": published_at,
-                "body": body,
+                "body": body or summary,  # always store at least the RSS summary
                 "fetched_at": now,
             })
     except Exception as e:
