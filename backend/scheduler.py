@@ -1,6 +1,7 @@
 import logging
 import os
 import threading
+import time
 from apscheduler.schedulers.background import BackgroundScheduler
 from database import (upsert_article, update_analysis, get_unanalyzed_articles,
                       get_articles_by_author, get_similar_articles)
@@ -27,6 +28,11 @@ def run_refresh():
             upsert_article(article)
 
         unanalyzed = get_unanalyzed_articles()
+        # Cap per refresh to protect daily token budget (~500k tokens/day on free tier)
+        max_per_refresh = int(os.getenv("MAX_ANALYSES_PER_REFRESH", "20"))
+        if len(unanalyzed) > max_per_refresh:
+            logger.info("Capping analysis at %d articles (have %d unanalyzed)", max_per_refresh, len(unanalyzed))
+            unanalyzed = unanalyzed[:max_per_refresh]
         logger.info("Analyzing %d new articles...", len(unanalyzed))
 
         for article in unanalyzed:
@@ -55,6 +61,9 @@ def run_refresh():
                     article["outlet"],
                     article["title"][:60],
                 )
+
+            # Respect Groq free tier: 30 req/min limit — 2s delay = max 30/min
+            time.sleep(2)
 
         logger.info("Refresh complete.")
     finally:
