@@ -36,18 +36,17 @@ BIAS_TOOL = {
                     "description": "1-2 sentences explaining the body bias score.",
                 },
                 "author_pattern_note": {
-                    "type": "string",
-                    "description": "If author comparison data was provided: 1-2 sentences noting whether this article aligns with or diverges from the author's typical bias pattern. Null if no author data was available.",
+                    "type": ["string", "null"],
+                    "description": "If author comparison data was provided: 1-2 sentences noting whether this article aligns with or diverges from the author's typical bias pattern. Omit or set null if no author data was available.",
                 },
                 "cross_outlet_note": {
-                    "type": "string",
-                    "description": "If cross-outlet data was provided: 1-2 sentences comparing how this outlet framed the story vs other outlets. Null if no cross-outlet data was available.",
+                    "type": ["string", "null"],
+                    "description": "If cross-outlet data was provided: 1-2 sentences comparing how this outlet framed the story vs other outlets. Omit or set null if no cross-outlet data was available.",
                 },
             },
             "required": [
                 "headline_score", "body_score",
                 "headline_explanation", "body_explanation",
-                "author_pattern_note", "cross_outlet_note",
             ],
         },
     },
