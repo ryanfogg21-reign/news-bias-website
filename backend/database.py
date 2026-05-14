@@ -61,6 +61,7 @@ def init_db():
                 ("author", "TEXT"),
                 ("author_pattern_note", "TEXT"),
                 ("cross_outlet_note", "TEXT"),
+                ("biased_quotes", "TEXT"),
             ]:
                 cur.execute(
                     f"ALTER TABLE articles ADD COLUMN IF NOT EXISTS {col} {coltype}"
@@ -103,6 +104,7 @@ def update_analysis(url: str, analysis: dict):
                     body_explanation     = %(body_explanation)s,
                     author_pattern_note  = %(author_pattern_note)s,
                     cross_outlet_note    = %(cross_outlet_note)s,
+                    biased_quotes        = %(biased_quotes)s,
                     analyzed_at          = %(analyzed_at)s
                 WHERE url = %(url)s
             """, {**analysis, "url": url})

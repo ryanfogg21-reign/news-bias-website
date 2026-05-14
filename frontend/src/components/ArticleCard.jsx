@@ -9,7 +9,13 @@ export default function ArticleCard({ article }) {
     overall_score, headline_score, body_score,
     headline_explanation, body_explanation,
     author_pattern_note, cross_outlet_note,
+    biased_quotes: biasedQuotesRaw,
   } = article;
+
+  const biasedQuotes = (() => {
+    try { return JSON.parse(biasedQuotesRaw || "[]"); }
+    catch { return []; }
+  })();
 
   const color = scoreColor(overall_score);
   const badge = scoreLabel(overall_score);
@@ -127,6 +133,10 @@ export default function ArticleCard({ article }) {
           <ScoreRow label="Headline" score={headline_score} explanation={headline_explanation} />
           <ScoreRow label="Article Body" score={body_score} explanation={body_explanation} />
 
+          {biasedQuotes.length > 0 && (
+            <RewriteSuggestions quotes={biasedQuotes} />
+          )}
+
           {author_pattern_note && (
             <NoteBox icon="✍️" label={`Author pattern${author ? ` — ${author}` : ""}`} note={author_pattern_note} />
           )}
@@ -164,6 +174,67 @@ function ScoreRow({ label, score, explanation }) {
           {explanation}
         </p>
       )}
+    </div>
+  );
+}
+
+function RewriteSuggestions({ quotes }) {
+  return (
+    <div style={{
+      background: "var(--surface2)",
+      border: "1px solid var(--border)",
+      borderRadius: 6,
+      overflow: "hidden",
+    }}>
+      <div style={{
+        padding: "8px 14px",
+        borderBottom: "1px solid var(--border)",
+        fontWeight: 600,
+        fontSize: 11,
+        color: "var(--text-muted)",
+        textTransform: "uppercase",
+        letterSpacing: "0.04em",
+      }}>
+        ✏️ Rewrite Suggestions
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+        {quotes.map((q, i) => (
+          <div key={i} style={{
+            padding: "12px 14px",
+            borderBottom: i < quotes.length - 1 ? "1px solid var(--border)" : "none",
+          }}>
+            <div style={{
+              background: "#fff8e1",
+              border: "1px solid #fde68a",
+              borderLeft: "3px solid #f59e0b",
+              borderRadius: 4,
+              padding: "7px 10px",
+              fontSize: 13,
+              color: "#78350f",
+              lineHeight: 1.5,
+              marginBottom: 7,
+              fontStyle: "italic",
+            }}>
+              "{q.original}"
+            </div>
+            <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 7, lineHeight: 1.5 }}>
+              {q.explanation}
+            </p>
+            <div style={{
+              background: "#f0fdf4",
+              border: "1px solid #bbf7d0",
+              borderLeft: "3px solid #22c55e",
+              borderRadius: 4,
+              padding: "7px 10px",
+              fontSize: 13,
+              color: "#14532d",
+              lineHeight: 1.5,
+            }}>
+              "{q.rewrite}"
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

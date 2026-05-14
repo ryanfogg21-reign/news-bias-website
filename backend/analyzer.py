@@ -9,7 +9,8 @@ logger = logging.getLogger(__name__)
 
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-MODEL = "llama-3.3-70b-versatile"
+# llama-3.1-8b-instant: 500k tokens/day free vs 100k for 70b-versatile
+MODEL = "llama-3.1-8b-instant"
 
 BIAS_TOOL = {
     "type": "function",
@@ -43,10 +44,34 @@ BIAS_TOOL = {
                     "type": ["string", "null"],
                     "description": "If cross-outlet data was provided: 1-2 sentences comparing how this outlet framed the story vs other outlets. Omit or set null if no cross-outlet data was available.",
                 },
+                "biased_quotes": {
+                    "type": "array",
+                    "description": "Up to 3 specific phrases or sentences written by the article's author (not direct quotes from interview subjects) that show clear political bias, each with a neutral rewrite. Only include items where the bias is clear and specific. Return an empty array if the article is largely unbiased.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "original": {
+                                "type": "string",
+                                "description": "The exact biased text from the article author's own words.",
+                            },
+                            "explanation": {
+                                "type": "string",
+                                "description": "One sentence explaining why this phrasing shows political bias.",
+                            },
+                            "rewrite": {
+                                "type": "string",
+                                "description": "A neutral, factual rewrite conveying the same information without bias.",
+                            },
+                        },
+                        "required": ["original", "explanation", "rewrite"],
+                    },
+                    "maxItems": 3,
+                },
             },
             "required": [
                 "headline_score", "body_score",
                 "headline_explanation", "body_explanation",
+                "biased_quotes",
             ],
         },
     },
@@ -58,6 +83,11 @@ SYSTEM_PROMPT = """You are an objective political bias analyst. Evaluate news co
 - Tone toward political figures, parties, and policies
 - Whether criticism is applied evenly across the political spectrum
 - Rhetorical structure and emotional appeals
+
+IMPORTANT: Do NOT factor direct quotes from interview subjects, politicians, or
+other named sources into the bias score. Only evaluate the author's own words —
+their framing, transitions, descriptions, and editorial choices. A journalist
+quoting a politician saying something extreme is not itself bias.
 
 Score with precision. Most articles fall between -3 and +3.
 Reserve -5 / +5 for extreme cases only. Do not factor in the outlet's
@@ -128,7 +158,7 @@ Headline: {title}
 {author_line}
 
 Article body:
-{content[:4000]}
+{content[:2000]}
 {author_ctx}{outlet_ctx}
 {author_instruction}
 {outlet_instruction}"""
@@ -136,7 +166,7 @@ Article body:
     try:
         completion = client.chat.completions.create(
             model=MODEL,
-            max_tokens=600,
+            max_tokens=700,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg},
@@ -162,6 +192,7 @@ Article body:
             "body_explanation": result.get("body_explanation", ""),
             "author_pattern_note": result.get("author_pattern_note") or None,
             "cross_outlet_note": result.get("cross_outlet_note") or None,
+            "biased_quotes": json.dumps(result.get("biased_quotes") or []),
             "analyzed_at": datetime.now(timezone.utc).isoformat(),
         }
 
