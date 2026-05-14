@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(if \\(-not $?\\) { \"Directory is empty or does not exist\" })",
+      "Bash(find /mnt/c/Users/ryanf/ClaudeNewsBiasWebsite -type f | sort)"
+    ]
+  }
+}
