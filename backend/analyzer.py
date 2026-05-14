@@ -3,14 +3,16 @@ import logging
 import os
 from datetime import datetime, timezone
 
-from groq import Groq
+from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+client = OpenAI(
+    api_key=os.getenv("GEMINI_API_KEY"),
+    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+)
 
-# llama-3.1-8b-instant: 500k tokens/day free vs 100k for 70b-versatile
-MODEL = "llama-3.1-8b-instant"
+MODEL = "gemini-2.0-flash"
 
 BIAS_TOOL = {
     "type": "function",
